@@ -138,6 +138,12 @@
         "default": "",
         "hint": "★主力引擎★ 在 saucenao.com 免费注册后在 API 页获取；留空则自动停用，识别精度大幅下降"
       },
+      "saucenao_merge_versions": {
+        "type": "switch",
+        "name": "合并同作品的多个章节版本",
+        "default": true,
+        "hint": "SauceNAO 常对同一作品返回多条不同章节（Ch. 1 / 1-2 / 1-3…）；开启后聚合成一条，保留章节最全的，并标注「同作品另有 N 个章节版本」"
+      },
       "enable_iqdb": {
         "type": "switch",
         "name": "启用 IQDB",

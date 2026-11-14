@@ -1,7 +1,7 @@
 {
   "plugin_id": "image_search",
   "display_name": "以图搜图",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "author": "znq19",
   "repo": "https://github.com/znq19/KiraAI_image_search_plugin",
   "description": "以图搜图：用 SauceNAO / IQDB / trace.moe / 百度识图 / Yandex / Gemini / 千问 / DeepSeek / Google Lens 搜索图片的角色、作品、画师与出处；国内引擎直连、海外走代理。支持 LLM 工具与命令直达（0 token）双通道。",

@@ -56,7 +56,7 @@ class ImageSearchPlugin(BasePlugin):
             "deepseek_in_tool": True,
             "deepseek_require_search": False,
         },
-        "section_anime": {"iqdb_in_tool": False},
+        "section_anime": {"iqdb_in_tool": False, "saucenao_merge_versions": True},
     }
 
     def _deepseek_chat_url(self) -> str:
@@ -169,6 +169,7 @@ class ImageSearchPlugin(BasePlugin):
         anime = cfg.get("section_anime", {})
         self.enable_saucenao = anime.get("enable_saucenao", True)
         self.saucenao_key = anime.get("saucenao_key", "")
+        self.saucenao_merge_versions = anime.get("saucenao_merge_versions", True)
         self.enable_iqdb = anime.get("enable_iqdb", True)
         self.iqdb_in_tool = anime.get("iqdb_in_tool", False)
         self.enable_tracemoe = anime.get("enable_tracemoe", True)
@@ -382,11 +383,16 @@ class ImageSearchPlugin(BasePlugin):
             source = m.get("source") or ""
             if title and link:
                 matches.append((f"{title} — {source}" if source else title, link))
+        thumb = next(
+            (m.get("thumbnail") for m in (j.get("visual_matches") or []) if m.get("thumbnail")),
+            "",
+        )
         return {
             "engine": "serpapi",
             "page_url": (j.get("reverse_image_search") or {}).get("link", ""),
             "knowledge": knowledge[:2],
             "matches": matches,
+            "thumb": thumb,
         }
 
     # ---------------- 引擎：Gemini 谷歌AI搜索（Google Search grounding） ----------------
@@ -949,7 +955,8 @@ class ImageSearchPlugin(BasePlugin):
 # ---------------- 引擎：DeepSeek 官方图搜（deepseek-flash + deepseek_web_search） ----------------
 
     _DEEPSEEK_PROMPT = (
-        "请先用图搜图/联网搜索查证，再回答：这张图里的角色是谁？出自哪部作品/游戏？"
+        "请先用图搜图/联网搜索查证，再回答：这张图里是什么？"
+        "如果是角色/人物，给出名字和出处作品；如果是物品/场景/梗图，说明它是什么、来自哪里。"
         "请给出判断依据。用简体中文，200字以内；不确定就直说不确定，不要编造。"
     )
 
@@ -1018,6 +1025,9 @@ class ImageSearchPlugin(BasePlugin):
                 for s in call.get("sources") or []:
                     url = s.get("url") or ""
                     title = s.get("title") or s.get("site_name") or url
+                    site = s.get("site_name") or ""
+                    if site and site not in title:
+                        title = f"{title} ({site})"
                     if url:
                         sources.append((title, url))
                     iu = s.get("image_url") or ""
@@ -1056,6 +1066,51 @@ class ImageSearchPlugin(BasePlugin):
 
 # ---------------- 引擎：SauceNAO ----------------
 
+    @staticmethod
+    def _sauce_base_name(text: str) -> str:
+        """去掉章节/汉化标记，得到用于聚合的作品名。"""
+        if not text:
+            return ""
+        s = str(text)
+        s = re.sub(r"\[[^\]]*\]", " ", s)  # [Fue] [Chinese] [丧尸汉化]
+        s = re.sub(r"\b(?:Ch(?:apter)?\.?)\s*\d+(?:\s*[-~]\s*\d+)?", " ", s, flags=re.I)
+        s = re.sub(r"第\s*\d+(?:\s*[-~]\s*\d+)?\s*[話话集]", " ", s)
+        return re.sub(r"\s+", " ", s).strip().lower()
+
+    @staticmethod
+    def _sauce_chapter_end(text: str) -> int:
+        """取章节范围的结束数字（Ch. 1-5 / 第1-5話 -> 5），无章节返回 0。"""
+        m = re.search(r"(?:Ch(?:apter)?\.?|第)\s*(\d+)(?:\s*[-~]\s*(\d+))?", str(text or ""), re.I)
+        if not m:
+            return 0
+        return int(m.group(2) or m.group(1))
+
+    def _merge_sauce_results(self, results: list[dict]) -> list[dict]:
+        """按 (画师, 作品名) 聚合：保留章节最全的一条，其余折叠为计数并合并链接。"""
+        groups: dict[tuple, list[dict]] = {}
+        for r in results:
+            base = self._sauce_base_name(r.get("source") or r.get("title"))
+            if not base:
+                base = str(r.get("title") or "").strip().lower()
+            key = (str(r.get("member") or "").strip().lower(), base, r.get("index_id"))
+            groups.setdefault(key, []).append(r)
+        merged: list[dict] = []
+        for items in groups.values():
+            items.sort(key=lambda x: (-float(x.get("sim") or 0),
+                                      -self._sauce_chapter_end(x.get("source") or x.get("title"))))
+            main = dict(items[0])
+            urls: list[str] = []
+            for it in items:
+                for u in (it.get("urls") or ([it.get("url")] if it.get("url") else [])):
+                    if u and str(u) not in urls:
+                        urls.append(str(u))
+            main["urls"] = urls[:2]
+            main["url"] = urls[0] if urls else ""
+            main["merged_count"] = len(items) - 1
+            merged.append(main)
+        merged.sort(key=lambda x: -float(x.get("sim") or 0))
+        return merged
+
     async def _saucenao(self, client: httpx.AsyncClient, img_bytes: bytes, filename: str) -> dict:
         await self._rate_limit("saucenao", _SAUCENAO_MIN_INTERVAL, "_saucenao_last")
         resp = await client.post(
@@ -1063,7 +1118,7 @@ class ImageSearchPlugin(BasePlugin):
             data={
                 "output_type": "2",
                 "api_key": self.saucenao_key,
-                "numres": str(self.max_results),
+                "numres": str(max(self.max_results, 10)),
                 "db": "999",
             },
             files={"file": (filename, img_bytes, "image/jpeg")},
@@ -1075,7 +1130,8 @@ class ImageSearchPlugin(BasePlugin):
             raise RuntimeError(f"saucenao status={header.get('status')}: {header.get('message', '')}")
         results = []
         raw = j.get("results") or []
-        for item in raw[: self.max_results]:
+        numres = max(self.max_results, 10)
+        for item in raw[:numres]:
             h = item.get("header") or {}
             d = item.get("data") or {}
             try:
@@ -1083,7 +1139,8 @@ class ImageSearchPlugin(BasePlugin):
             except (TypeError, ValueError):
                 sim = 0.0
             title = d.get("title") or d.get("jp_name") or d.get("eng_name") or d.get("source") or ""
-            member = d.get("member_name") or d.get("creator") or ""
+            member = (d.get("member_name") or d.get("creator")
+                      or d.get("artist") or d.get("author") or "")
             if isinstance(member, list):
                 member = ", ".join(str(m) for m in member)
             urls = d.get("ext_urls") or []
@@ -1095,18 +1152,32 @@ class ImageSearchPlugin(BasePlugin):
             material = d.get("material") or ""
             if isinstance(material, list):
                 material = ", ".join(str(c) for c in material)
+            part = str(d.get("part") or "").strip(" -")
             results.append(
                 {
                     "sim": sim,
                     "title": title,
                     "member": str(member),
                     "url": urls[0] if urls else "",
+                    "urls": [str(u) for u in urls[:2]],
+                    "part": part,
+                    "index_id": h.get("index_id"),
                     "source": source,
                     "characters": str(characters),
                     "material": str(material),
                     "thumb": h.get("thumbnail") or "",
                 }
             )
+        # 前 N 条可能全是没有外链的 H-Manga 条目；若都没有 ext_urls，
+        # 从后续结果补一条带链接的（不挤掉原有条目），保证能给出漫画网址。
+        selected = results[: self.max_results]
+        if not any(r.get("urls") for r in selected):
+            extra = next((r for r in results[self.max_results:] if r.get("urls")), None)
+            if extra:
+                selected.append(extra)
+        results = selected
+        if self.saucenao_merge_versions and len(results) > 1:
+            results = self._merge_sauce_results(results)
         top_sim = 0.0
         try:
             top_sim = max(float((x.get("header") or {}).get("similarity") or 0) for x in raw) if raw else 0.0
@@ -1351,6 +1422,7 @@ class ImageSearchPlugin(BasePlugin):
         if j.get("error"):
             raise RuntimeError(str(j["error"]))
         results = []
+        seen = set()
         for r in (j.get("result") or [])[: self.max_results]:
             sim = (r.get("similarity") or 0) * 100
             # 官方称相似度 <90% 基本为错误结果，cutoff 提到 80，80-89 标注疑似
@@ -1359,8 +1431,24 @@ class ImageSearchPlugin(BasePlugin):
             anilist = r.get("anilist") or {}
             title_obj = anilist.get("title") or {}
             title = title_obj.get("native") or title_obj.get("romaji") or title_obj.get("english") or ""
-            ep = r.get("episode")
-            results.append({"sim": round(sim, 1), "title": title, "episode": ep, "uncertain": sim < 90})
+            # 中文名在 title.chinese（synonyms_chinese 常为空）
+            title_cn = str(title_obj.get("chinese") or "").strip()
+            if title_cn == title:
+                title_cn = ""
+            key = (title, r.get("episode"), int(float(r.get("from") or 0)))
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                "sim": round(sim, 1),
+                "title": title,
+                "title_cn": title_cn,
+                "episode": r.get("episode"),
+                "from": r.get("from"),
+                "to": r.get("to"),
+                "site_url": anilist.get("siteUrl") or "",
+                "uncertain": sim < 90,
+            })
         return {"engine": "tracemoe", "results": results}
 
     # ---------------- 图床（SerpApi 需要公网 URL） ----------------
@@ -1575,6 +1663,10 @@ class ImageSearchPlugin(BasePlugin):
         sau = results.get("saucenao")
         if isinstance(sau, dict) and sau.get("results"):
             thumb = sau["results"][0].get("thumb", "")
+        if not thumb:
+            sp = results.get("serpapi")
+            if isinstance(sp, dict) and sp.get("thumb"):
+                thumb = sp["thumb"]
         if not thumb:
             bd = results.get("baidu")
             if isinstance(bd, dict):
@@ -1842,6 +1934,8 @@ class ImageSearchPlugin(BasePlugin):
                 seg = f"[百度识图] 来源页标题:「{s['title']}」"
                 if s["website"]:
                     seg += f" ({s['website']})"
+                if s.get("abstract"):
+                    seg += f" 摘要:{str(s['abstract'])[:80]}"
                 lines.append(seg)
                 if s["url"]:
                     links.append(s["url"])
@@ -1903,7 +1997,15 @@ class ImageSearchPlugin(BasePlugin):
                 has_any = True
                 ep = f" 第{r['episode']}集" if r.get("episode") else ""
                 note = "（疑似，仅供参考）" if r.get("uncertain") else ""
-                lines.append(f"[trace.moe] 动画截图出自《{r['title']}》{ep} (相似度{r['sim']}%){note}")
+                cn = f"（{r['title_cn']}）" if r.get("title_cn") else ""
+                ts = ""
+                if r.get("from") is not None:
+                    sec = int(r["from"])
+                    ts = f" 时间 {sec // 60:02d}:{sec % 60:02d}"
+                lines.append(
+                    f"[trace.moe] 动画截图出自《{r['title']}》{cn}{ep} "
+                    f"(相似度{r['sim']}%){ts}{note}"
+                )
         elif isinstance(tm, Exception):
             lines.append(f"[trace.moe] 查询失败: {tm}")
 
@@ -1920,9 +2022,17 @@ class ImageSearchPlugin(BasePlugin):
                     seg += f" 「{r['title']}」"
                 if r["member"]:
                     seg += f" 画师:{r['member']}"
+                if r["source"]:
+                    seg += f" 条目:{r['source']}"
+                if r.get("part"):
+                    seg += f" 章节:{r['part']}"
+                if r.get("merged_count"):
+                    seg += f"（同作品另有 {r['merged_count']} 个章节版本）"
                 lines.append(seg)
                 if r["url"]:
                     links.append(r["url"])
+                for u in (r.get("urls") or [])[1:]:
+                    links.append(u)
             if not (sau.get("results")):
                 raw_count = sau.get("raw_count", 0)
                 top = sau.get("top_sim", 0)
@@ -1980,9 +2090,17 @@ class ImageSearchPlugin(BasePlugin):
                     seg += f" 「{r['title']}」"
                 if r["member"]:
                     seg += f" 画师:{r['member']}"
+                if r["source"]:
+                    seg += f"\n  条目:{r['source']}"
+                if r.get("part"):
+                    seg += f" 章节:{r['part']}"
+                if r.get("merged_count"):
+                    seg += f"（同作品另有 {r['merged_count']} 个章节版本）"
                 lines.append(seg)
                 if r["url"]:
                     lines.append(f"  {r['url']}")
+                for u in (r.get("urls") or [])[1:]:
+                    lines.append(f"  {u}")
 
         iq = results.get("iqdb")
         if isinstance(iq, dict) and iq.get("matches"):
@@ -1995,7 +2113,12 @@ class ImageSearchPlugin(BasePlugin):
             for r in tm["results"]:
                 ep = f" 第{r['episode']}集" if r.get("episode") else ""
                 note = "（疑似，仅供参考）" if r.get("uncertain") else ""
-                lines.append(f"【番剧截图】《{r['title']}》{ep} ({r['sim']}%){note}")
+                cn = f"（{r['title_cn']}）" if r.get("title_cn") else ""
+                ts = ""
+                if r.get("from") is not None:
+                    sec = int(r["from"])
+                    ts = f" {sec // 60:02d}:{sec % 60:02d}"
+                lines.append(f"【番剧截图】《{r['title']}》{cn}{ep} ({r['sim']}%){ts}{note}")
 
         sp = results.get("serpapi")
         if isinstance(sp, dict):
@@ -2273,11 +2396,11 @@ class ImageSearchPlugin(BasePlugin):
     @register.tool(
         name="search_image",
         description=(
-            "以图搜图：用 SauceNAO / IQDB / Yandex识图 / Gemini谷歌AI搜索 / Google Lens 搜索使用了该图或相似图的网页，"
-            "返回角色名、作品、画师、出处链接等真实网页标注信息，比图片文字描述（caption）准确得多。"
-            "用户问图片里是谁/什么角色/原图/画师/来源/出处时必须调用（番剧截图问哪部番第几集请改用 search_anime），"
-            "即使 caption 看起来确定——caption 可能编造角色名。caption 与用户说法冲突或含糊时也应调用。"
-            "仅问画面内容（几个人、在干嘛、表情）时不需要调用。"
+            "以图搜图：用 SauceNAO、DeepSeek、百度、Yandex、IQDB 等 9 个引擎搜索该图或相似图的网页，"
+            "返回角色名、作品、画师、出处链接等真实标注，比图片 caption 准确。"
+            "用户问图片里是谁/什么角色/原图/画师/来源时必须调用；番剧截图问第几集改用 search_anime。"
+            "即使 caption 看起来确定也要调用（caption 可能编错角色名）。"
+            "仅问画面内容（几个人、在干嘛）时不需要调用。"
         ),
         params={
             "type": "object",
@@ -2314,8 +2437,9 @@ class ImageSearchPlugin(BasePlugin):
     @register.tool(
         name="search_anime",
         description=(
-            "识别动画截图出自哪部番剧、第几集（trace.moe 专用）。用户发番剧/动画截图问出处、哪部番、第几集时调用。"
-            "同人图、立绘、插画、表情包不要调用本工具（改用 search_image）。"
+            "识别动画截图出自哪部番剧、第几集、第几秒（trace.moe 专用）。"
+            "用户发番剧/动画截图问出处、哪部番、第几集时调用。"
+            "同人图、立绘、插画、表情包不要调用（改用 search_image）。"
         ),
         params={
             "type": "object",

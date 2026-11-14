@@ -6,7 +6,7 @@
 |---|---|
 | 插件名 | 以图搜图 |
 | ID | `image_search` |
-| 版本 | 2.4.0 |
+| 版本 | 2.4.1 |
 | 作者 | znq19 |
 | 适用框架 | KiraAI `>=2.6.1`（已在 **v3.1.2** 实测通过） |
 
@@ -162,6 +162,7 @@ KiraAI/
 | 配置 | 默认 | 说明 |
 |---|---|---|
 | 启用 SauceNAO / IQDB / trace.moe | 都开 | 见上文表格 |
+| 合并同作品的多个章节版本 | **开** | SauceNAO 常对同一作品返回多条章节（Ch.1 / 1-2 / 1-3…）；开启后聚合成一条，保留章节最全的，标注「同作品另有 N 个章节版本」 |
 | LLM 工具通道也跑 IQDB | **关** | IQDB 首次常 45–130 秒，默认只在命令通道跑；开启后工具通道也会等它 |
 | 搜图也跑 trace.moe | **关** | trace.moe 只对番剧截图有效，普通搜图默认不带它 |
 
@@ -207,7 +208,7 @@ KiraAI/
 | DeepSeek 图搜 ★ | 启用 / Key / 模型 ID / Base URL / 额外头 / 额外体 / 时限 / 工具通道跑 / 必须图搜 | 开 / 空 / `deepseek-flash` / `https://api.deepseek.com` / `{}` / `{}` / 60秒 / **开** / **关** |
 | 千问图搜图（不推荐） | 启用 / Key / 地域 / 模型 / 图搜图工具 / 联网核实 / 工具通道跑千问 / 时限 | 开 / 空 / `beijing` / `qwen3.7-plus` / 开 / **关** / **关** / 180秒 |
 | Google Lens | 启用 / SerpApi Key | **关** / 空 |
-| 二次元专用 | 启用 SauceNAO / SauceNAO API Key / 启用 IQDB / LLM 工具通道也跑 IQDB / 启用 trace.moe / 搜图也跑 trace.moe | 开 / 空 / 开 / **关** / 开 / **关** |
+| 二次元专用 | 启用 SauceNAO / SauceNAO API Key / 合并同作品章节 / 启用 IQDB / LLM 工具通道也跑 IQDB / 启用 trace.moe / 搜图也跑 trace.moe | 开 / 空 / **开** / 开 / **关** / 开 / **关** |
 | 命令直达 | 启用搜图命令 / 搜图命令词 / 启用搜番命令 / 搜番命令词 / 回复带最佳匹配缩略图 / 合并转发形式回复 / 命令白名单 | **关** / `/搜图`,`/识别图片` / **关** / `/搜番` / **关** / 开 / 空 |
 | LLM 工具 | 启用搜图工具 search_image / 启用搜番工具 search_anime | 开 / 开 |
 
@@ -278,6 +279,16 @@ A：目前图床上传会走海外代理，部分代理会返回 412。可以先
 ---
 
 ## 九、更新日志
+
+<details>
+<summary>v2.4.1（2026-11-14）</summary>
+
+- 两个 LLM 工具描述更新：`search_image` 的引擎列表补全为 9 个（含 DeepSeek/百度等）并压缩到 208 字符；`search_anime` 补充「第几秒」。
+- DeepSeek 默认提示词通用化：从「角色是谁/哪部作品」改为「这张图里是什么」，角色/人物仍给名字与出处，物品/场景/梗图说明是什么、来自哪里。
+- SauceNAO 同作品聚合（可关）：同一画师+作品的多个章节版本合并为一条，保留章节最全的，标注「同作品另有 N 个章节版本」；`source` 条目信息（章节范围 + 汉化组），例如 `Ch. 1-5 [Chinese] [丧尸汉化]`；SauceNAO 本身不返回单页页码。
+- 引擎字段补全：trace.moe 增加精确时间点（`from`→`mm:ss`）、中文名（`title.chinese`，与原名相同时不重复显示）、AniList 链接；SauceNAO 增加 `artist` 兜底、`part` 章节、多条 `ext_urls`；百度增加 `abstract` 摘要；SerpApi 增加 `thumbnail` 缩略图兜底；DeepSeek 来源标题拼上 `site_name`。
+
+</details>
 
 <details>
 <summary>v2.4.0（2026-11-14）</summary>
