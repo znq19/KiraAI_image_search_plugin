@@ -33,6 +33,16 @@ _YANDEX_MIN_INTERVAL = 3  # Yandex 免 key 限速
 _CACHE_MAX = 500
 
 
+def _supports_timeout(fn) -> bool:
+    """客户端 send_action 是否接受 timeout 关键字（老核心没有这个形参）。"""
+    try:
+        import inspect
+
+        return "timeout" in inspect.signature(fn).parameters
+    except Exception:
+        return False
+
+
 class _QwenResponsesHttpError(RuntimeError):
     """Responses API 非 2xx 错误：带 status/message，便于上层按错误内容降级重试。"""
 
@@ -189,6 +199,8 @@ class ImageSearchPlugin(BasePlugin):
         self.command_words_anime = [str(w).strip() for w in _words_anime if str(w).strip()]
         self.send_thumbnail = cmd.get("send_thumbnail", False)
         self.send_forward = cmd.get("send_forward", True)
+        # 合并转发等待回包秒数（NapCat 默认 10s，转发要打包上传内容，常不够）
+        self.forward_timeout = float(cmd.get("forward_timeout", 60) or 0)
         self.allowed_users = [str(uid) for uid in (cmd.get("allowed_users") or [])]
 
         tool_cfg = cfg.get("section_tool", {})
@@ -1735,6 +1747,12 @@ class ImageSearchPlugin(BasePlugin):
             return False
         return client is not None and callable(getattr(client, "send_action", None))
 
+    async def _forward_call(self, client, action: str, params: dict):
+        """合并转发专用调用：显式拉长超时（老核心无该形参时自动退回）。"""
+        if self.forward_timeout > 0 and _supports_timeout(client.send_action):
+            return await client.send_action(action, params, timeout=self.forward_timeout)
+        return await client.send_action(action, params)
+
     async def _send_qq_forward(self, event: KiraMessageEvent, blocks: list[str], thumb: str) -> bool:
         """用 NapCat 节点接口发合并转发（对齐 deepwiki 的可用格式）。返回是否成功。"""
         adapter = self.ctx.adapter_mgr.get_adapter(event.adapter.name)
@@ -1783,7 +1801,8 @@ class ImageSearchPlugin(BasePlugin):
             nodes = make_nodes(fmt)
             for action in actions:
                 try:
-                    resp = await client.send_action(action, {**params_base, "messages": nodes})
+                    resp = await self._forward_call(
+                        client, action, {**params_base, "messages": nodes})
                     if isinstance(resp, dict) and resp.get("status") == "failed":
                         raise RuntimeError(str(resp.get("message") or resp.get("wording") or resp))
                     return True
