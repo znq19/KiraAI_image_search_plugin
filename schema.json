@@ -345,6 +345,14 @@
         "default": true,
         "hint": "仅 QQ 系（NapCat/OneBot）生效：结果以合并转发卡片发送；其他平台与失败情况自动降级为普通消息"
       },
+      "forward_timeout": {
+        "type": "integer",
+        "name": "合并转发等待秒数",
+        "default": 60,
+        "minimum": 0,
+        "maximum": 300,
+        "hint": "等待 NapCat 回包的最长秒数。合并转发要先打包上传内容，比普通消息慢得多，框架默认只有 10 秒，转发很容易在打包完成前就超时（超时后插件会降级重发，于是同一内容发两遍）。默认 60 秒；填 0 表示沿用框架默认值"
+      },
       "allowed_users": {
         "type": "list",
         "name": "命令白名单",
